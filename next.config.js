@@ -1,13 +1,19 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
 const nextConfig = {
-  output: 'standalone',
+  output: process.env.NODE_ENV === 'production' ? 'export' : 'standalone',
+  trailingSlash: true,
   eslint: {
     dirs: ['src'],
   },
 
   reactStrictMode: false,
   swcMinify: true,
+  
+  // Disable server-side features for static export
+  ...(process.env.NODE_ENV === 'production' && {
+    distDir: 'out',
+  }),
 
   // Uncoment to add domain whitelist
   images: {
@@ -69,6 +75,36 @@ const withPWA = require('next-pwa')({
   disable: process.env.NODE_ENV === 'development',
   register: true,
   skipWaiting: true,
+  // Optimize for shared hosting
+  maximumFileSizeToCacheInBytes: 5000000, // 5MB limit
+  runtimeCaching: [
+    {
+      urlPattern: /^https?.*/,
+      handler: 'NetworkFirst',
+      options: {
+        cacheName: 'offlineCache',
+        expiration: {
+          maxEntries: 200,
+          maxAgeSeconds: 86400, // 24 hours
+        },
+      },
+    },
+  ],
 });
+
+// Additional optimizations for static export
+if (process.env.NODE_ENV === 'production') {
+  nextConfig.experimental = {
+    ...nextConfig.experimental,
+    optimizeCss: true,
+    optimizePackageImports: ['lucide-react', '@heroicons/react'],
+  };
+  
+  // Disable features that don't work with static export
+  nextConfig.images = {
+    ...nextConfig.images,
+    unoptimized: true,
+  };
+}
 
 module.exports = withPWA(nextConfig);
