@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "npm run gen:runtime && npm run gen:manifest && next dev -H 0.0.0.0",
     "build": "npm run gen:runtime && npm run gen:manifest && next build",
+    "build:static": "npm run gen:runtime && npm run gen:manifest && NODE_ENV=production next build",
     "start": "next start",
     "lint": "next lint",
     "lint:fix": "eslint src --fix && npm run format",
