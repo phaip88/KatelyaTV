@@ -13,6 +13,10 @@ const nextConfig = {
   // Disable server-side features for static export
   ...(process.env.NODE_ENV === 'production' && {
     distDir: 'out',
+    // Disable problematic features for static export
+    experimental: {
+      optimizeCss: false,
+    },
   }),
 
   // Uncoment to add domain whitelist
@@ -72,34 +76,13 @@ const nextConfig = {
 
 const withPWA = require('next-pwa')({
   dest: 'public',
-  disable: process.env.NODE_ENV === 'development',
+  disable: process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'production',
   register: true,
   skipWaiting: true,
-  // Optimize for shared hosting
-  maximumFileSizeToCacheInBytes: 5000000, // 5MB limit
-  runtimeCaching: [
-    {
-      urlPattern: /^https?.*/,
-      handler: 'NetworkFirst',
-      options: {
-        cacheName: 'offlineCache',
-        expiration: {
-          maxEntries: 200,
-          maxAgeSeconds: 86400, // 24 hours
-        },
-      },
-    },
-  ],
 });
 
 // Additional optimizations for static export
 if (process.env.NODE_ENV === 'production') {
-  nextConfig.experimental = {
-    ...nextConfig.experimental,
-    optimizeCss: true,
-    optimizePackageImports: ['lucide-react', '@heroicons/react'],
-  };
-  
   // Disable features that don't work with static export
   nextConfig.images = {
     ...nextConfig.images,
