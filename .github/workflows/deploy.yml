@@ -133,40 +133,20 @@ jobs:
         path: katelyatv-deploy.tar.gz
         retention-days: 30
         
-    - name: Deploy to server (if secrets configured)
-      if: ${{ secrets.SSH_HOST }}
+    - name: Deployment Instructions
       run: |
-        # Install sshpass for password authentication
-        sudo apt-get update && sudo apt-get install -y sshpass
-        
-        # Upload deployment package
-        sshpass -p "${{ secrets.SSH_PASSWORD }}" scp -o StrictHostKeyChecking=no -P 2323 \
-          katelyatv-deploy.tar.gz ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/
-        
-        # Deploy on server
-        sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no -p 2323 \
-          ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'ENDSSH'
-          
-          # Backup current deployment
-          if [ -d "public_html_backup" ]; then
-            rm -rf public_html_backup
-          fi
-          if [ -d "public_html" ] && [ "$(ls -A public_html)" ]; then
-            cp -r public_html public_html_backup
-          fi
-          
-          # Extract new deployment
-          cd ~/
-          tar -xzf katelyatv-deploy.tar.gz -C public_html/
-          
-          # Set proper permissions
-          chmod -R 755 public_html/
-          find public_html/ -type f -exec chmod 644 {} \;
-          
-          # Cleanup
-          rm -f katelyatv-deploy.tar.gz
-          
-          echo "Deployment completed successfully!"
-          echo "Site URL: https://wwwwwww.sylu.net"
-          
-        ENDSSH
+        echo "🎉 Build completed successfully!"
+        echo ""
+        echo "📦 Deployment package created: katelyatv-deploy.tar.gz"
+        echo "📊 Package size: $(ls -lh katelyatv-deploy.tar.gz | awk '{print $5}')"
+        echo ""
+        echo "🚀 Manual Deployment Steps:"
+        echo "1. Download the 'katelyatv-deployment' artifact from this workflow"
+        echo "2. Extract to get katelyatv-deploy.tar.gz"
+        echo "3. Upload to server:"
+        echo "   scp -P 2323 katelyatv-deploy.tar.gz igaqjbsf@server8.webhostmost.com:~/"
+        echo "4. Deploy on server:"
+        echo "   ssh -p 2323 igaqjbsf@server8.webhostmost.com"
+        echo "   ./quick-deploy.sh"
+        echo ""
+        echo "🌐 Site URL: https://wwwwwww.sylu.net"
