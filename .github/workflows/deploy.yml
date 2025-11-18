@@ -1,0 +1,172 @@
+name: Build and Deploy KatelyaTV
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.19.4'
+        cache: 'npm'
+        
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 10.12.4
+        
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+      
+    - name: Generate runtime config
+      run: pnpm run gen:runtime
+      
+    - name: Generate manifest
+      run: pnpm run gen:manifest
+      
+    - name: Build application
+      run: pnpm run build
+      env:
+        NODE_ENV: production
+        NEXT_PUBLIC_STORAGE_TYPE: localstorage
+        NEXT_PUBLIC_ENABLE_REGISTER: false
+        PASSWORD: ${{ secrets.APP_PASSWORD }}
+        
+    - name: Optimize build output
+      run: |
+        # Remove unnecessary files to save space
+        find out/ -name "*.map" -delete
+        find out/ -name "*.txt" -type f -exec gzip -9 {} \; -exec mv {}.gz {} \;
+        find out/ -name "*.css" -exec gzip -9 {} \; -exec mv {}.gz {} \;
+        find out/ -name "*.js" -exec gzip -9 {} \; -exec mv {}.gz {} \;
+        
+    - name: Create deployment package
+      run: |
+        # Create deployment directory
+        mkdir -p deploy
+        
+        # Copy static files
+        cp -r out/* deploy/
+        
+        # Copy necessary config files
+        cp config.json deploy/ 2>/dev/null || echo "config.json not found, using default"
+        
+        # Create .htaccess for proper routing
+        cat > deploy/.htaccess << 'EOF'
+        RewriteEngine On
+        
+        # Enable gzip compression
+        <IfModule mod_deflate.c>
+            AddOutputFilterByType DEFLATE text/plain
+            AddOutputFilterByType DEFLATE text/html
+            AddOutputFilterByType DEFLATE text/xml
+            AddOutputFilterByType DEFLATE text/css
+            AddOutputFilterByType DEFLATE application/xml
+            AddOutputFilterByType DEFLATE application/xhtml+xml
+            AddOutputFilterByType DEFLATE application/rss+xml
+            AddOutputFilterByType DEFLATE application/javascript
+            AddOutputFilterByType DEFLATE application/x-javascript
+        </IfModule>
+        
+        # Cache static assets
+        <IfModule mod_expires.c>
+            ExpiresActive On
+            ExpiresByType image/jpg "access plus 1 month"
+            ExpiresByType image/jpeg "access plus 1 month"
+            ExpiresByType image/gif "access plus 1 month"
+            ExpiresByType image/png "access plus 1 month"
+            ExpiresByType text/css "access plus 1 month"
+            ExpiresByType application/pdf "access plus 1 month"
+            ExpiresByType text/javascript "access plus 1 month"
+            ExpiresByType application/javascript "access plus 1 month"
+        </IfModule>
+        
+        # Handle Next.js routing
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule ^(.*)$ /index.html [L,QSA]
+        
+        # Security headers
+        <IfModule mod_headers.c>
+            Header always set X-Content-Type-Options nosniff
+            Header always set X-Frame-Options DENY
+            Header always set X-XSS-Protection "1; mode=block"
+        </IfModule>
+        EOF
+        
+        # Create deployment info
+        echo "Build Date: $(date)" > deploy/build-info.txt
+        echo "Commit: ${{ github.sha }}" >> deploy/build-info.txt
+        
+    - name: Check deployment size
+      run: |
+        DEPLOY_SIZE=$(du -sh deploy | cut -f1)
+        echo "Deployment size: $DEPLOY_SIZE"
+        DEPLOY_SIZE_MB=$(du -sm deploy | cut -f1)
+        if [ $DEPLOY_SIZE_MB -gt 100 ]; then
+          echo "Warning: Deployment size ($DEPLOY_SIZE_MB MB) is close to 125MB limit"
+        fi
+        
+    - name: Create deployment archive
+      run: |
+        cd deploy
+        tar -czf ../katelyatv-deploy.tar.gz .
+        cd ..
+        echo "Archive created: katelyatv-deploy.tar.gz"
+        ls -lh katelyatv-deploy.tar.gz
+        
+    - name: Upload deployment artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: katelyatv-deployment
+        path: katelyatv-deploy.tar.gz
+        retention-days: 30
+        
+    - name: Deploy to server (if secrets configured)
+      if: ${{ secrets.SSH_HOST && secrets.SSH_USER && secrets.SSH_PASSWORD }}
+      run: |
+        # Install sshpass for password authentication
+        sudo apt-get update && sudo apt-get install -y sshpass
+        
+        # Upload deployment package
+        sshpass -p "${{ secrets.SSH_PASSWORD }}" scp -o StrictHostKeyChecking=no -P 2323 \
+          katelyatv-deploy.tar.gz ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:~/
+        
+        # Deploy on server
+        sshpass -p "${{ secrets.SSH_PASSWORD }}" ssh -o StrictHostKeyChecking=no -p 2323 \
+          ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'ENDSSH'
+          
+          # Backup current deployment
+          if [ -d "public_html_backup" ]; then
+            rm -rf public_html_backup
+          fi
+          if [ -d "public_html" ] && [ "$(ls -A public_html)" ]; then
+            cp -r public_html public_html_backup
+          fi
+          
+          # Extract new deployment
+          cd ~/
+          tar -xzf katelyatv-deploy.tar.gz -C public_html/
+          
+          # Set proper permissions
+          chmod -R 755 public_html/
+          find public_html/ -type f -exec chmod 644 {} \;
+          
+          # Cleanup
+          rm -f katelyatv-deploy.tar.gz
+          
+          echo "Deployment completed successfully!"
+          echo "Site URL: https://wwwwwww.sylu.net"
+          
+        ENDSSH
