@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 /* eslint-disable @typescript-eslint/no-var-requires */
 const nextConfig = {
-  output: process.env.NODE_ENV === 'production' ? 'export' : 'standalone',
+  output: 'standalone',
   trailingSlash: true,
   eslint: {
     dirs: ['src'],
@@ -9,15 +9,6 @@ const nextConfig = {
 
   reactStrictMode: false,
   swcMinify: true,
-  
-  // Disable server-side features for static export
-  ...(process.env.NODE_ENV === 'production' && {
-    distDir: 'out',
-    // Disable problematic features for static export
-    experimental: {
-      optimizeCss: false,
-    },
-  }),
 
   // Uncoment to add domain whitelist
   images: {
@@ -76,18 +67,9 @@ const nextConfig = {
 
 const withPWA = require('next-pwa')({
   dest: 'public',
-  disable: process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'production',
+  disable: process.env.NODE_ENV === 'development',
   register: true,
   skipWaiting: true,
 });
-
-// Additional optimizations for static export
-if (process.env.NODE_ENV === 'production') {
-  // Disable features that don't work with static export
-  nextConfig.images = {
-    ...nextConfig.images,
-    unoptimized: true,
-  };
-}
 
 module.exports = withPWA(nextConfig);
