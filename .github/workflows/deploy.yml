@@ -57,8 +57,7 @@ jobs:
         cp -r .next/static deploy/.next/
         cp -r public/* deploy/public/
 
-        # Copy node_modules for CloudLinux compatibility
-        cp -r node_modules deploy/
+        # Note: node_modules not included - CloudLinux will manage dependencies
 
         # Copy necessary config files
         cp config.production.json deploy/config.json 2>/dev/null || echo "config.json not found, using default"
