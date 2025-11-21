@@ -15,9 +15,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          # ❌ 不要使用 cache: npm/yarn
+          # cache: 'npm'
 
-      # 👉 必须明确安装 pnpm（解决你遇到的报错）
       - name: Install pnpm
         run: npm install -g pnpm
 
@@ -36,6 +36,7 @@ jobs:
           if [ -d ".next/standalone" ]; then
             echo "Using Next.js standalone output..."
             cp -R .next/standalone/* release/
+
             mkdir -p release/.next
             cp -R .next/static release/.next/static
 
@@ -48,6 +49,7 @@ jobs:
             fi
           else
             echo "Fallback: bundling whole .next + node_modules"
+
             cp -R .next release/.next
 
             if [ -d "public" ]; then
