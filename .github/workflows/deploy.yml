@@ -57,15 +57,18 @@ jobs:
         cp -r .next/static deploy/.next/
         cp -r public/* deploy/public/
 
-        # Note: node_modules not included - CloudLinux will manage dependencies
+        # Remove node_modules to reduce package size - CloudLinux will manage dependencies
+        rm -rf deploy/node_modules
 
         # Copy necessary config files
         cp config.production.json deploy/config.json 2>/dev/null || echo "config.json not found, using default"
         
-        # Create .htaccess for proper routing
+        # Create .htaccess for Passenger Node.js
         cat > deploy/.htaccess << 'EOF'
-        RewriteEngine On
-        
+        PassengerEnabled on
+        PassengerAppType node
+        PassengerStartupFile server.js
+
         # Enable gzip compression
         <IfModule mod_deflate.c>
             AddOutputFilterByType DEFLATE text/plain
@@ -78,7 +81,7 @@ jobs:
             AddOutputFilterByType DEFLATE application/javascript
             AddOutputFilterByType DEFLATE application/x-javascript
         </IfModule>
-        
+
         # Cache static assets
         <IfModule mod_expires.c>
             ExpiresActive On
@@ -91,12 +94,7 @@ jobs:
             ExpiresByType text/javascript "access plus 1 month"
             ExpiresByType application/javascript "access plus 1 month"
         </IfModule>
-        
-        # Handle Next.js routing
-        RewriteCond %{REQUEST_FILENAME} !-f
-        RewriteCond %{REQUEST_FILENAME} !-d
-        RewriteRule ^(.*)$ /index.html [L,QSA]
-        
+
         # Security headers
         <IfModule mod_headers.c>
             Header always set X-Content-Type-Options nosniff
