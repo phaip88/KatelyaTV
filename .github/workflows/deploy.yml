@@ -50,7 +50,8 @@ jobs:
       run: |
         # Create deployment directory
         mkdir -p deploy
-        
+        mkdir -p deploy/public
+
         # Copy standalone build files
         cp -r .next/standalone/* deploy/
         cp -r .next/static deploy/.next/
