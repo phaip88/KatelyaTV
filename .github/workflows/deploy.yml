@@ -1,150 +1,97 @@
-name: Build and Deploy KatelyaTV
+name: Build KatelyaTV for Webhostmost
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+  # 手动触发（推荐你先用这个调试）
   workflow_dispatch:
+  # 或者当你打 tag 的时候自动构建
+  push:
+    tags:
+      - "webhostmost-*"
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Setup pnpm
-      uses: pnpm/action-setup@v2
-      with:
-        version: 10.12.4
-        
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.19.4'
-        cache: 'pnpm'
-        
-    - name: Install dependencies
-      run: pnpm install --frozen-lockfile
-      
-    - name: Generate runtime config
-      run: pnpm run gen:runtime
-      
-    - name: Generate manifest
-      run: pnpm run gen:manifest
-      
-    - name: Build application
-      run: pnpm run build
-      env:
-        NODE_ENV: production
-        NEXT_PUBLIC_STORAGE_TYPE: localstorage
-        NEXT_PUBLIC_ENABLE_REGISTER: false
-        PASSWORD: ${{ secrets.APP_PASSWORD || 'admin123' }}
-        
-    # Note: For CloudLinux deployment, we skip output optimization
-    # as Passenger will handle compression
-        
-    - name: Create deployment package
-      run: |
-        # Create deployment directory
-        mkdir -p deploy
-        mkdir -p deploy/public
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-        # Copy standalone build files
-        cp -r .next/standalone/* deploy/
-        cp -r .next/static deploy/.next/
-        cp -r public/* deploy/public/
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
 
-        # Remove node_modules to reduce package size - CloudLinux will manage dependencies
-        rm -rf deploy/node_modules
+      - name: Enable corepack (pnpm)
+        run: corepack enable
 
-        # Copy necessary config files
-        cp config.production.json deploy/config.json 2>/dev/null || echo "config.json not found, using default"
-        
-        # Create .htaccess for Passenger Node.js
-        cat > deploy/.htaccess << 'EOF'
-        PassengerEnabled on
-        PassengerAppType node
-        PassengerStartupFile server.js
+      - name: Install dependencies (pnpm)
+        run: pnpm install --frozen-lockfile
 
-        # Enable gzip compression
-        <IfModule mod_deflate.c>
-            AddOutputFilterByType DEFLATE text/plain
-            AddOutputFilterByType DEFLATE text/html
-            AddOutputFilterByType DEFLATE text/xml
-            AddOutputFilterByType DEFLATE text/css
-            AddOutputFilterByType DEFLATE application/xml
-            AddOutputFilterByType DEFLATE application/xhtml+xml
-            AddOutputFilterByType DEFLATE application/rss+xml
-            AddOutputFilterByType DEFLATE application/javascript
-            AddOutputFilterByType DEFLATE application/x-javascript
-        </IfModule>
+      - name: Build production
+        # 如果后续发现脚本名不是 build，可以改成对应的 pnpm run XXX
+        run: pnpm run build
 
-        # Cache static assets
-        <IfModule mod_expires.c>
-            ExpiresActive On
-            ExpiresByType image/jpg "access plus 1 month"
-            ExpiresByType image/jpeg "access plus 1 month"
-            ExpiresByType image/gif "access plus 1 month"
-            ExpiresByType image/png "access plus 1 month"
-            ExpiresByType text/css "access plus 1 month"
-            ExpiresByType application/pdf "access plus 1 month"
-            ExpiresByType text/javascript "access plus 1 month"
-            ExpiresByType application/javascript "access plus 1 month"
-        </IfModule>
+      # 尝试使用 Next.js standalone 产物（如果有）
+      - name: Prepare runtime bundle for shared hosting
+        run: |
+          set -eux
 
-        # Security headers
-        <IfModule mod_headers.c>
-            Header always set X-Content-Type-Options nosniff
-            Header always set X-Frame-Options DENY
-            Header always set X-XSS-Protection "1; mode=block"
-        </IfModule>
-        EOF
-        
-        # Create deployment info
-        echo "Build Date: $(date)" > deploy/build-info.txt
-        echo "Commit: ${{ github.sha }}" >> deploy/build-info.txt
-        
-    - name: Check deployment size
-      run: |
-        DEPLOY_SIZE=$(du -sh deploy | cut -f1)
-        echo "Deployment size: $DEPLOY_SIZE"
-        DEPLOY_SIZE_MB=$(du -sm deploy | cut -f1)
-        if [ $DEPLOY_SIZE_MB -gt 100 ]; then
-          echo "Warning: Deployment size ($DEPLOY_SIZE_MB MB) is close to 125MB limit"
-        fi
-        
-    - name: Create deployment archive
-      run: |
-        cd deploy
-        tar -czf ../katelyatv-deploy.tar.gz .
-        cd ..
-        echo "Archive created: katelyatv-deploy.tar.gz"
-        ls -lh katelyatv-deploy.tar.gz
-        
-    - name: Upload deployment artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: katelyatv-deployment
-        path: katelyatv-deploy.tar.gz
-        retention-days: 30
-        
-    - name: Deployment Instructions
-      run: |
-        echo "🎉 Build completed successfully!"
-        echo ""
-        echo "📦 Deployment package created: katelyatv-deploy.tar.gz"
-        echo "📊 Package size: $(ls -lh katelyatv-deploy.tar.gz | awk '{print $5}')"
-        echo ""
-        echo "🚀 Manual Deployment Steps:"
-        echo "1. Download the 'katelyatv-deployment' artifact from this workflow"
-        echo "2. Extract to get katelyatv-deploy.tar.gz"
-        echo "3. Upload to server:"
-        echo "   scp -P 2323 katelyatv-deploy.tar.gz igaqjbsf@server8.webhostmost.com:~/"
-        echo "4. Deploy on server:"
-        echo "   ssh -p 2323 igaqjbsf@server8.webhostmost.com"
-        echo "   ./quick-deploy.sh"
-        echo ""
-        echo "🌐 Site URL: https://wwwwwww.sylu.net"
+          rm -rf release
+          mkdir -p release
+
+          if [ -d ".next/standalone" ]; then
+            echo "Detected Next.js standalone output, using it for runtime bundle..."
+
+            # 拷贝 standalone（内含 node_modules、package.json 等）
+            cp -R .next/standalone/* release/
+
+            # 拷贝静态资源与 public
+            mkdir -p release/.next
+            cp -R .next/static release/.next/static
+
+            if [ -d "public" ]; then
+              cp -R public release/public
+            fi
+
+            # 如果你有自定义 config.json，也一并带上
+            if [ -f "config.json" ]; then
+              cp config.json release/config.json
+            fi
+          else
+            echo "No .next/standalone found, fallback to basic bundle..."
+
+            # 兜底方案：直接把运行必需目录打包（空间会比较大）
+            cp -R .next release/.next
+
+            if [ -d "public" ]; then
+              cp -R public release/public
+            fi
+
+            if [ -d "node_modules" ]; then
+              cp -R node_modules release/node_modules
+            fi
+
+            for f in package.json next.config.js start.js config.json; do
+              if [ -f "$f" ]; then
+                cp "$f" "release/$f"
+              fi
+            done
+          fi
+
+          # 简单删掉源码目录以减少体积（按需再调整）
+          rm -rf release/src || true
+          rm -rf release/tests || true
+
+      - name: Create zip artifact
+        run: |
+          cd release
+          zip -r ../katelyatv-webhostmost.zip .
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: katelyatv-webhostmost
+          path: katelyatv-webhostmost.zip
+          compression-level: 9
