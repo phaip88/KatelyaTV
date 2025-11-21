@@ -1,8 +1,10 @@
-name: Build and Deploy KatelyaTV Standalone
+name: Build and Deploy KatelyaTV
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -28,61 +30,11 @@ jobs:
       run: pnpm install --frozen-lockfile
       
     - name: Generate runtime config
-      run: |
-        cat > config.production.json << 'EOF'
-        {
-          "cache_time": 7200,
-          "api_site": {
-            "hnzy": {
-              "api": "https://hnzyapi.com/api.php/provide/vod",
-              "name": "火鸟资源",
-              "is_adult": false
-            },
-            "lzzy": {
-              "api": "https://api.liangzizy.com/inc/apijson_vod.php",
-              "name": "量子资源",
-              "is_adult": false
-            },
-            "ffzy": {
-              "api": "https://ffzyapi.com/api.php/provide/vod",
-              "name": "非凡资源",
-              "is_adult": false
-            },
-            "ykzy": {
-              "api": "https://api.yongjiuzy.cc/provide/vod",
-              "name": "永久资源",
-              "is_adult": false
-            },
-            "bdzy": {
-              "api": "https://api.1080zyku.com/inc/apijson_vod.php",
-              "name": "百度资源",
-              "is_adult": false
-            }
-          }
-        }
-        EOF
-        
+      run: pnpm run gen:runtime
+      
     - name: Generate manifest
-      run: |
-        cat > public/manifest.json << 'EOF'
-        {
-          "name": "KatelyaTV",
-          "short_name": "KatelyaTV",
-          "description": "跨平台影视聚合播放器",
-          "start_url": "/",
-          "display": "standalone",
-          "background_color": "#000000",
-          "theme_color": "#000000",
-          "icons": [
-            {
-              "src": "/favicon.ico",
-              "sizes": "64x64 32x32 24x24 16x16",
-              "type": "image/x-icon"
-            }
-          ]
-        }
-        EOF
-        
+      run: pnpm run gen:manifest
+      
     - name: Build application
       run: pnpm run build
       env:
@@ -91,154 +43,85 @@ jobs:
         NEXT_PUBLIC_ENABLE_REGISTER: false
         PASSWORD: ${{ secrets.APP_PASSWORD || 'admin123' }}
         
-    - name: Verify build output
-      run: |
-        echo "=== Build Verification ==="
-        echo "Next.js build directory:"
-        ls -la .next/
-        echo ""
-        
-        if [ -d ".next/standalone" ]; then
-          echo "✅ Standalone build found"
-          echo "Standalone contents:"
-          ls -la .next/standalone/
-          echo ""
-          
-          if [ -f ".next/standalone/server.js" ]; then
-            echo "✅ Server file found: $(ls -lh .next/standalone/server.js)"
-          else
-            echo "❌ Server file missing!"
-            exit 1
-          fi
-        else
-          echo "❌ Standalone build not found!"
-          echo "This indicates the build configuration is incorrect."
-          exit 1
-        fi
-        
-        echo "Static files:"
-        ls -la .next/static/ | head -10
+    # Note: For CloudLinux deployment, we skip output optimization
+    # as Passenger will handle compression
         
     - name: Create deployment package
       run: |
-        echo "=== Creating Deployment Package ==="
-        
         # Create deployment directory
         mkdir -p deploy
         
-        # Copy standalone server files
-        echo "Copying standalone files..."
+        # Copy standalone build files
         cp -r .next/standalone/* deploy/
-        
-        # Copy static files to correct location
-        echo "Copying static files..."
-        mkdir -p deploy/.next
         cp -r .next/static deploy/.next/
+        cp -r public/* deploy/public/
         
-        # Copy public files
-        if [ -d "public" ]; then
-          echo "Copying public files..."
-          mkdir -p deploy/public
-          cp -r public/* deploy/public/
+        # Copy necessary config files
+        cp config.production.json deploy/config.json 2>/dev/null || echo "config.json not found, using default"
+        
+        # Create .htaccess for proper routing
+        cat > deploy/.htaccess << 'EOF'
+        RewriteEngine On
+        
+        # Enable gzip compression
+        <IfModule mod_deflate.c>
+            AddOutputFilterByType DEFLATE text/plain
+            AddOutputFilterByType DEFLATE text/html
+            AddOutputFilterByType DEFLATE text/xml
+            AddOutputFilterByType DEFLATE text/css
+            AddOutputFilterByType DEFLATE application/xml
+            AddOutputFilterByType DEFLATE application/xhtml+xml
+            AddOutputFilterByType DEFLATE application/rss+xml
+            AddOutputFilterByType DEFLATE application/javascript
+            AddOutputFilterByType DEFLATE application/x-javascript
+        </IfModule>
+        
+        # Cache static assets
+        <IfModule mod_expires.c>
+            ExpiresActive On
+            ExpiresByType image/jpg "access plus 1 month"
+            ExpiresByType image/jpeg "access plus 1 month"
+            ExpiresByType image/gif "access plus 1 month"
+            ExpiresByType image/png "access plus 1 month"
+            ExpiresByType text/css "access plus 1 month"
+            ExpiresByType application/pdf "access plus 1 month"
+            ExpiresByType text/javascript "access plus 1 month"
+            ExpiresByType application/javascript "access plus 1 month"
+        </IfModule>
+        
+        # Handle Next.js routing
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule ^(.*)$ /index.html [L,QSA]
+        
+        # Security headers
+        <IfModule mod_headers.c>
+            Header always set X-Content-Type-Options nosniff
+            Header always set X-Frame-Options DENY
+            Header always set X-XSS-Protection "1; mode=block"
+        </IfModule>
+        EOF
+        
+        # Create deployment info
+        echo "Build Date: $(date)" > deploy/build-info.txt
+        echo "Commit: ${{ github.sha }}" >> deploy/build-info.txt
+        
+    - name: Check deployment size
+      run: |
+        DEPLOY_SIZE=$(du -sh deploy | cut -f1)
+        echo "Deployment size: $DEPLOY_SIZE"
+        DEPLOY_SIZE_MB=$(du -sm deploy | cut -f1)
+        if [ $DEPLOY_SIZE_MB -gt 100 ]; then
+          echo "Warning: Deployment size ($DEPLOY_SIZE_MB MB) is close to 125MB limit"
         fi
-        
-        # Copy config
-        cp config.production.json deploy/config.json
-        
-        # Create startup script
-        cat > deploy/start.sh << 'EOF'
-        #!/bin/bash
-        export NODE_ENV=production
-        export PORT=${PORT:-3000}
-        export HOSTNAME=${HOSTNAME:-0.0.0.0}
-        
-        echo "Starting KatelyaTV server..."
-        echo "Port: $PORT"
-        echo "Hostname: $HOSTNAME"
-        
-        node server.js
-        EOF
-        chmod +x deploy/start.sh
-        
-        # Create process management script
-        cat > deploy/manage.sh << 'EOF'
-        #!/bin/bash
-        
-        case "$1" in
-          start)
-            echo "Starting KatelyaTV..."
-            nohup ./start.sh > app.log 2>&1 &
-            echo $! > app.pid
-            echo "Started with PID: $(cat app.pid)"
-            ;;
-          stop)
-            if [ -f app.pid ]; then
-              PID=$(cat app.pid)
-              kill $PID 2>/dev/null
-              rm -f app.pid
-              echo "Stopped KatelyaTV (PID: $PID)"
-            else
-              echo "No PID file found"
-            fi
-            ;;
-          restart)
-            $0 stop
-            sleep 2
-            $0 start
-            ;;
-          status)
-            if [ -f app.pid ]; then
-              PID=$(cat app.pid)
-              if kill -0 $PID 2>/dev/null; then
-                echo "KatelyaTV is running (PID: $PID)"
-              else
-                echo "PID file exists but process not running"
-                rm -f app.pid
-              fi
-            else
-              echo "KatelyaTV is not running"
-            fi
-            ;;
-          logs)
-            tail -f app.log
-            ;;
-          *)
-            echo "Usage: $0 {start|stop|restart|status|logs}"
-            exit 1
-            ;;
-        esac
-        EOF
-        chmod +x deploy/manage.sh
-        
-        # Create build info
-        cat > deploy/build-info.txt << EOF
-        Build Date: $(date)
-        Commit: ${{ github.sha }}
-        Build Mode: Standalone
-        Node Version: $(node --version)
-        Deployment Type: Node.js Application
-        EOF
-        
-        # Remove unnecessary files to save space
-        find deploy/ -name "*.map" -delete 2>/dev/null || true
-        find deploy/ -name "*.test.js" -delete 2>/dev/null || true
-        
-        echo "=== Deployment Package Summary ==="
-        echo "Package size: $(du -sh deploy | cut -f1)"
-        echo "Key files:"
-        ls -la deploy/
-        echo ""
-        echo "Server file: $(ls -lh deploy/server.js)"
-        echo "Package.json: $(ls -lh deploy/package.json 2>/dev/null || echo 'Not found')"
         
     - name: Create deployment archive
       run: |
         cd deploy
         tar -czf ../katelyatv-deploy.tar.gz .
         cd ..
-        
-        echo "=== Archive Created ==="
-        echo "Archive size: $(ls -lh katelyatv-deploy.tar.gz)"
+        echo "Archive created: katelyatv-deploy.tar.gz"
+        ls -lh katelyatv-deploy.tar.gz
         
     - name: Upload deployment artifact
       uses: actions/upload-artifact@v4
@@ -251,22 +134,16 @@ jobs:
       run: |
         echo "🎉 Build completed successfully!"
         echo ""
-        echo "📦 Deployment package: katelyatv-deploy.tar.gz"
+        echo "📦 Deployment package created: katelyatv-deploy.tar.gz"
         echo "📊 Package size: $(ls -lh katelyatv-deploy.tar.gz | awk '{print $5}')"
         echo ""
-        echo "🚀 Deployment Steps:"
-        echo "1. Download 'katelyatv-deployment' artifact"
-        echo "2. Upload to server:"
+        echo "🚀 Manual Deployment Steps:"
+        echo "1. Download the 'katelyatv-deployment' artifact from this workflow"
+        echo "2. Extract to get katelyatv-deploy.tar.gz"
+        echo "3. Upload to server:"
         echo "   scp -P 2323 katelyatv-deploy.tar.gz igaqjbsf@server8.webhostmost.com:~/"
-        echo "3. Deploy:"
+        echo "4. Deploy on server:"
         echo "   ssh -p 2323 igaqjbsf@server8.webhostmost.com"
-        echo "   ./deploy-standalone.sh"
+        echo "   ./quick-deploy.sh"
         echo ""
-        echo "🎮 Management Commands:"
-        echo "   ./manage.sh start    # Start application"
-        echo "   ./manage.sh stop     # Stop application"
-        echo "   ./manage.sh restart  # Restart application"
-        echo "   ./manage.sh status   # Check status"
-        echo "   ./manage.sh logs     # View logs"
-        echo ""
-        echo "🌐 Access URL: https://wwwwwww.sylu.net"
+        echo "🌐 Site URL: https://wwwwwww.sylu.net"
