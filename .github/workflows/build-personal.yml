@@ -1,12 +1,12 @@
-﻿name: Build KatelyaTV Personal Edition
+name: Build KatelyaTV Personal Edition
 
 on:
   workflow_dispatch:
     inputs:
       password:
-        description: 'Access password (optional)'
+        description: 'Access password (optional, default: 123456)'
         required: false
-        default: ''
+        default: '123456'
       version:
         description: 'Version number'
         required: false
@@ -20,109 +20,306 @@ env:
   PNPM_VERSION: '9'
 
 jobs:
-  build-static:
-    name: Build Static Version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v2
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - name: Configure
-        run: |
-          echo "NEXT_PUBLIC_STORAGE_TYPE=localstorage" >> .env
-          echo "NEXT_PUBLIC_ENABLE_REGISTER=false" >> .env
-      - name: Modify config
-        run: |
-          cat > next.config.js << 'EOF'
-          const nextConfig = {
-            output: 'export',
-            trailingSlash: true,
-            images: { unoptimized: true },
-            eslint: { ignoreDuringBuilds: true },
-            typescript: { ignoreBuildErrors: true },
-          };
-          const withPWA = require('next-pwa')({
-            dest: 'public',
-            disable: process.env.NODE_ENV === 'development',
-            register: true,
-            skipWaiting: true,
-          });
-          module.exports = withPWA(nextConfig);
-          EOF
-      - run: pnpm run gen:runtime && pnpm run gen:manifest
-      - run: pnpm run build
-        env:
-          NODE_ENV: production
-      - name: Package
-        run: |
-          mkdir -p deploy
-          cp -r out/* deploy/ 2>/dev/null || cp -r .next/static deploy/_next/
-          cp config.json deploy/ 2>/dev/null || true
-          tar -czf katelyatv-static.tar.gz -C deploy .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: katelyatv-static
-          path: katelyatv-static.tar.gz
-
   build-nodejs:
     name: Build Node.js Version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
         with:
-          version: 9
-      - uses: actions/setup-node@v4
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - name: Configure
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure environment
         run: |
+          # Personal edition config
           echo "NEXT_PUBLIC_STORAGE_TYPE=localstorage" >> .env
           echo "NEXT_PUBLIC_ENABLE_REGISTER=false" >> .env
-      - run: pnpm run gen:runtime && pnpm run gen:manifest
-      - run: pnpm run build
+          # Set password (required by the app)
+          PASSWORD="${{ github.event.inputs.password }}"
+          if [ -z "$PASSWORD" ]; then
+            PASSWORD="123456"
+          fi
+          echo "PASSWORD=$PASSWORD" >> .env
+          echo "AUTH_PASSWORD=$PASSWORD" >> .env
+
+      - name: Generate runtime config
+        run: |
+          pnpm run gen:runtime
+          pnpm run gen:manifest
+
+      - name: Build application
+        run: pnpm run build
         env:
           NODE_ENV: production
-      - name: Package
-        run: |
-          mkdir -p deploy
-          cp -r .next/standalone/* deploy/
-          mkdir -p deploy/.next/static
-          cp -r .next/static/* deploy/.next/static/
-          cp -r public deploy/
-          cp config.json deploy/ 2>/dev/null || true
-          cp start.js deploy/ 2>/dev/null || true
-          tar -czf katelyatv-nodejs.tar.gz -C deploy .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: katelyatv-nodejs
-          path: katelyatv-nodejs.tar.gz
+          NEXT_PUBLIC_STORAGE_TYPE: localstorage
+          NEXT_PUBLIC_ENABLE_REGISTER: false
 
-  release:
-    needs: [build-static, build-nodejs]
+      - name: Prepare Node.js package
+        run: |
+          mkdir -p nodejs-deploy
+          
+          # Copy standalone output
+          cp -r .next/standalone/* nodejs-deploy/
+          
+          # Copy static files
+          mkdir -p nodejs-deploy/.next/static
+          cp -r .next/static/* nodejs-deploy/.next/static/
+          
+          # Copy public directory
+          cp -r public nodejs-deploy/
+          
+          # Copy config files
+          cp config.json nodejs-deploy/ 2>/dev/null || true
+          cp start.js nodejs-deploy/ 2>/dev/null || true
+          cp -r scripts nodejs-deploy/ 2>/dev/null || true
+          
+          # Create start script
+          cat > nodejs-deploy/start.sh << 'STARTEOF'
+          #!/bin/bash
+          export NODE_ENV=production
+          export PORT=${PORT:-3000}
+          export HOSTNAME=${HOSTNAME:-0.0.0.0}
+          if [ -f "start.js" ]; then
+            node start.js
+          else
+            node server.js
+          fi
+          STARTEOF
+          chmod +x nodejs-deploy/start.sh
+          
+          # Create PM2 config
+          cat > nodejs-deploy/ecosystem.config.js << 'PM2EOF'
+          module.exports = {
+            apps: [{
+              name: 'katelyatv',
+              script: 'start.js',
+              instances: 1,
+              autorestart: true,
+              watch: false,
+              max_memory_restart: '1G',
+              env: {
+                NODE_ENV: 'production',
+                PORT: 3000
+              }
+            }]
+          };
+          PM2EOF
+          
+          # Create Dockerfile
+          cat > nodejs-deploy/Dockerfile << 'DOCKEREOF'
+          FROM node:20-alpine
+          WORKDIR /app
+          COPY . .
+          ENV NODE_ENV=production
+          ENV PORT=3000
+          ENV HOSTNAME=0.0.0.0
+          EXPOSE 3000
+          CMD ["node", "start.js"]
+          DOCKEREOF
+          
+          # Create README
+          cat > nodejs-deploy/README.md << 'READMEEOF'
+          # KatelyaTV Node.js Personal Edition
+          
+          ## Quick Start
+          
+          ### Direct Run
+          ```bash
+          ./start.sh
+          # or
+          node start.js
+          ```
+          
+          ### Using PM2
+          ```bash
+          npm install -g pm2
+          pm2 start ecosystem.config.js
+          pm2 save
+          ```
+          
+          ### Using Docker
+          ```bash
+          docker build -t katelyatv .
+          docker run -d -p 3000:3000 --name katelyatv katelyatv
+          ```
+          
+          ## Default Password
+          Default access password: 123456
+          
+          Set custom password via environment variable:
+          ```bash
+          export AUTH_PASSWORD=your_password
+          ```
+          
+          ## Features
+          - Video search and playback
+          - Play history (local storage)
+          - Favorites (local storage)
+          - Theme switching
+          - PWA support
+          READMEEOF
+          
+          # Create version info
+          echo "KatelyaTV Node.js Personal Edition" > nodejs-deploy/VERSION.txt
+          echo "Build: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> nodejs-deploy/VERSION.txt
+          echo "Version: ${{ github.event.inputs.version || 'personal' }}" >> nodejs-deploy/VERSION.txt
+          
+          # Package
+          tar -czf katelyatv-nodejs-personal.tar.gz -C nodejs-deploy .
+          ls -lh katelyatv-nodejs-personal.tar.gz
+
+      - name: Prepare Static package (frontend only)
+        run: |
+          mkdir -p static-deploy
+          
+          # Copy static files from .next/static
+          mkdir -p static-deploy/_next/static
+          cp -r .next/static/* static-deploy/_next/static/
+          
+          # Copy public files
+          cp -r public/* static-deploy/
+          
+          # Copy config
+          cp config.json static-deploy/ 2>/dev/null || true
+          
+          # Create .htaccess for Apache
+          cat > static-deploy/.htaccess << 'HTACCESSEOF'
+          <IfModule mod_rewrite.c>
+            RewriteEngine On
+            RewriteBase /
+            RewriteCond %{REQUEST_FILENAME} !-f
+            RewriteCond %{REQUEST_FILENAME} !-d
+            RewriteRule ^ index.html [QSA,L]
+          </IfModule>
+          
+          <IfModule mod_deflate.c>
+            AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json
+          </IfModule>
+          
+          <IfModule mod_expires.c>
+            ExpiresActive On
+            ExpiresByType text/css "access plus 1 month"
+            ExpiresByType application/javascript "access plus 1 month"
+            ExpiresByType image/* "access plus 1 month"
+          </IfModule>
+          HTACCESSEOF
+          
+          # Create README
+          cat > static-deploy/README.md << 'READMEEOF'
+          # KatelyaTV Static Personal Edition
+          
+          ## IMPORTANT NOTE
+          
+          This static version contains ONLY the frontend assets.
+          It requires a backend server to function properly.
+          
+          For a fully functional standalone deployment, please use:
+          - katelyatv-nodejs-personal.tar.gz (Node.js version)
+          
+          ## What's included
+          - Static CSS/JS files
+          - Public assets (icons, images)
+          - PWA manifest
+          
+          ## Recommended Deployment
+          Use the Node.js version for full functionality.
+          READMEEOF
+          
+          # Package
+          tar -czf katelyatv-static-personal.tar.gz -C static-deploy .
+          ls -lh katelyatv-static-personal.tar.gz
+
+      - name: Upload Node.js artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: katelyatv-nodejs-personal
+          path: katelyatv-nodejs-personal.tar.gz
+          retention-days: 30
+
+      - name: Upload Static artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: katelyatv-static-personal
+          path: katelyatv-static-personal.tar.gz
+          retention-days: 30
+
+  create-release:
+    name: Create Release
+    needs: [build-nodejs]
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download Node.js artifact
+        uses: actions/download-artifact@v4
         with:
-          name: katelyatv-static
-      - uses: actions/download-artifact@v4
+          name: katelyatv-nodejs-personal
+
+      - name: Download Static artifact
+        uses: actions/download-artifact@v4
         with:
-          name: katelyatv-nodejs
-      - uses: softprops/action-gh-release@v1
+          name: katelyatv-static-personal
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION="${{ github.event.inputs.version || 'personal' }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: personal-${{ github.run_number }}
-          name: KatelyaTV Personal ${{ github.run_number }}
+          tag_name: ${{ steps.version.outputs.version }}-${{ github.run_number }}
+          name: KatelyaTV Personal ${{ steps.version.outputs.version }}-${{ github.run_number }}
+          body: |
+            ## KatelyaTV Personal Edition
+            
+            ### Downloads
+            
+            | File | Description |
+            |------|-------------|
+            | `katelyatv-nodejs-personal.tar.gz` | **Recommended** - Full Node.js application |
+            | `katelyatv-static-personal.tar.gz` | Frontend assets only (requires backend) |
+            
+            ### Node.js Version (Recommended)
+            
+            ```bash
+            # Extract
+            tar -xzf katelyatv-nodejs-personal.tar.gz
+            
+            # Run
+            ./start.sh
+            # or
+            node start.js
+            ```
+            
+            **Default Password:** `123456`
+            
+            ### Requirements
+            - Node.js 20+
+            - Or Docker
+            
+            ### Features
+            - Video search and playback
+            - Play history (local storage)
+            - Favorites (local storage)
+            - Theme switching
+            - PWA support
+          draft: false
+          prerelease: false
           files: |
-            katelyatv-static.tar.gz
-            katelyatv-nodejs.tar.gz
+            katelyatv-nodejs-personal.tar.gz
+            katelyatv-static-personal.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
