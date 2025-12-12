@@ -1,0 +1,128 @@
+﻿name: Build KatelyaTV Personal Edition
+
+on:
+  workflow_dispatch:
+    inputs:
+      password:
+        description: 'Access password (optional)'
+        required: false
+        default: ''
+      version:
+        description: 'Version number'
+        required: false
+        default: 'personal'
+  push:
+    tags:
+      - 'v*'
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+
+jobs:
+  build-static:
+    name: Build Static Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Configure
+        run: |
+          echo "NEXT_PUBLIC_STORAGE_TYPE=localstorage" >> .env
+          echo "NEXT_PUBLIC_ENABLE_REGISTER=false" >> .env
+      - name: Modify config
+        run: |
+          cat > next.config.js << 'EOF'
+          const nextConfig = {
+            output: 'export',
+            trailingSlash: true,
+            images: { unoptimized: true },
+            eslint: { ignoreDuringBuilds: true },
+            typescript: { ignoreBuildErrors: true },
+          };
+          const withPWA = require('next-pwa')({
+            dest: 'public',
+            disable: process.env.NODE_ENV === 'development',
+            register: true,
+            skipWaiting: true,
+          });
+          module.exports = withPWA(nextConfig);
+          EOF
+      - run: pnpm run gen:runtime && pnpm run gen:manifest
+      - run: pnpm run build
+        env:
+          NODE_ENV: production
+      - name: Package
+        run: |
+          mkdir -p deploy
+          cp -r out/* deploy/ 2>/dev/null || cp -r .next/static deploy/_next/
+          cp config.json deploy/ 2>/dev/null || true
+          tar -czf katelyatv-static.tar.gz -C deploy .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: katelyatv-static
+          path: katelyatv-static.tar.gz
+
+  build-nodejs:
+    name: Build Node.js Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Configure
+        run: |
+          echo "NEXT_PUBLIC_STORAGE_TYPE=localstorage" >> .env
+          echo "NEXT_PUBLIC_ENABLE_REGISTER=false" >> .env
+      - run: pnpm run gen:runtime && pnpm run gen:manifest
+      - run: pnpm run build
+        env:
+          NODE_ENV: production
+      - name: Package
+        run: |
+          mkdir -p deploy
+          cp -r .next/standalone/* deploy/
+          mkdir -p deploy/.next/static
+          cp -r .next/static/* deploy/.next/static/
+          cp -r public deploy/
+          cp config.json deploy/ 2>/dev/null || true
+          cp start.js deploy/ 2>/dev/null || true
+          tar -czf katelyatv-nodejs.tar.gz -C deploy .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: katelyatv-nodejs
+          path: katelyatv-nodejs.tar.gz
+
+  release:
+    needs: [build-static, build-nodejs]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: katelyatv-static
+      - uses: actions/download-artifact@v4
+        with:
+          name: katelyatv-nodejs
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: personal-${{ github.run_number }}
+          name: KatelyaTV Personal ${{ github.run_number }}
+          files: |
+            katelyatv-static.tar.gz
+            katelyatv-nodejs.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
